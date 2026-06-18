@@ -17,6 +17,8 @@ SYSTEMD_TEMPLATE="/etc/systemd/system/hysteria-server@.service"
 INIT_SCRIPT="/etc/init.d/hysteria-server"
 
 IS_OPENWRT=0
+IS_EL7=0
+LEGACY_SYSTEMD=0
 
 REPO_URL="https://github.com/apernet/hysteria"
 HY2_API_URL="https://api.hy2.io/v1/update"
@@ -63,11 +65,36 @@ detect_openwrt() {
   fi
 }
 
+detect_el7() {
+  if [[ -f /etc/redhat-release ]] && grep -qE '(CentOS|Red Hat|Oracle|Rocky|Alma|Scientific|CloudLinux).*(release|Linux release) 7(\.| |$)' /etc/redhat-release; then
+    IS_EL7=1
+    return 0
+  fi
+  if [[ -f /etc/os-release ]] && grep -qE '^VERSION_ID="?7(\.|"|$)' /etc/os-release; then
+    IS_EL7=1
+  fi
+}
+
+detect_systemd_features() {
+  local ver
+  ver=$(systemctl --version 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1 || true)
+  if [[ -n "$ver" && "$ver" -lt 229 ]]; then
+    LEGACY_SYSTEMD=1
+  fi
+}
+
 detect_os() {
   if [[ "$(uname -s)" != "Linux" ]]; then
     die "此腳本僅支援 Linux 系統"
   fi
   detect_openwrt
+  detect_el7
+  if [[ "$IS_OPENWRT" != "1" ]]; then
+    detect_systemd_features
+  fi
+  if [[ "$IS_EL7" == "1" ]]; then
+    log_info "偵測到 CentOS/RHEL 7，使用相容模式"
+  fi
 }
 
 detect_mips_softfloat() {
@@ -167,7 +194,11 @@ install_dependencies() {
   elif [[ -n "$PKG_INSTALL" ]]; then
     log_step "安裝依賴套件..."
     $PKG_UPDATE 2>/dev/null || true
-    $PKG_INSTALL curl ca-certificates openssl 2>/dev/null || true
+    local pkgs=(curl ca-certificates openssl)
+    if [[ "$LEGACY_SYSTEMD" == "1" ]]; then
+      pkgs+=(libcap)
+    fi
+    $PKG_INSTALL "${pkgs[@]}" 2>/dev/null || true
   fi
 
   if ! command -v grep >/dev/null 2>&1; then
@@ -253,6 +284,26 @@ install_binary() {
   log_info "已安裝版本: ${installed:-unknown}"
 }
 
+apply_binary_capabilities() {
+  if [[ "$LEGACY_SYSTEMD" != "1" ]]; then
+    return 0
+  fi
+  if ! command -v setcap >/dev/null 2>&1; then
+    log_warn "未安裝 setcap（libcap），監聽 1024 以下埠號可能無法啟動"
+    return 0
+  fi
+  log_step "設定執行檔網路權限（相容舊版 systemd）..."
+  if ! setcap 'cap_net_bind_service,cap_net_admin,cap_net_raw=+ep' "$EXECUTABLE_PATH" 2>/dev/null; then
+    log_warn "setcap 失敗，若使用 1024 以下埠號請改用較高端口或手動設定權限"
+  fi
+}
+
+remove_binary_capabilities() {
+  if [[ -x "$EXECUTABLE_PATH" ]] && command -v setcap >/dev/null 2>&1; then
+    setcap -r "$EXECUTABLE_PATH" 2>/dev/null || true
+  fi
+}
+
 create_user() {
   if [[ "$IS_OPENWRT" == "1" ]]; then
     HYSTERIA_USER="root"
@@ -268,6 +319,14 @@ create_user() {
 write_systemd_service() {
   log_step "設定 systemd 服務..."
 
+  local capability_block=""
+  if [[ "$LEGACY_SYSTEMD" != "1" ]]; then
+    capability_block="
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true"
+  fi
+
   cat > "$SYSTEMD_SERVICE" <<EOF
 [Unit]
 Description=Hysteria Server Service
@@ -280,10 +339,7 @@ ExecStart=${EXECUTABLE_PATH} server --config ${CONFIG_FILE}
 WorkingDirectory=/var/lib/${HYSTERIA_USER}
 User=${HYSTERIA_USER}
 Group=${HYSTERIA_USER}
-Environment=HYSTERIA_LOG_LEVEL=info
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-NoNewPrivileges=true
+Environment=HYSTERIA_LOG_LEVEL=info${capability_block}
 Restart=on-failure
 RestartSec=5
 
@@ -303,10 +359,7 @@ ExecStart=${EXECUTABLE_PATH} server --config ${CONFIG_DIR}/%i.yaml
 WorkingDirectory=/var/lib/${HYSTERIA_USER}
 User=${HYSTERIA_USER}
 Group=${HYSTERIA_USER}
-Environment=HYSTERIA_LOG_LEVEL=info
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-NoNewPrivileges=true
+Environment=HYSTERIA_LOG_LEVEL=info${capability_block}
 Restart=on-failure
 RestartSec=5
 
@@ -464,6 +517,10 @@ configure_firewall() {
 }
 
 enable_bbr() {
+  if [[ "$IS_EL7" == "1" ]] && ! grep -q bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    log_warn "CentOS 7 預設核心不支援 BBR，已跳過（可透過 elrepo 核心啟用）"
+    return 0
+  fi
   if [[ -f /proc/sys/net/ipv4/tcp_congestion_control ]] && \
      grep -q bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
     local current
@@ -524,6 +581,7 @@ get_listen_port_from_config() {
 do_install() {
   log_step "開始安裝 Hysteria 2"
   install_binary
+  apply_binary_capabilities
   create_user
   write_service
 
@@ -564,6 +622,7 @@ do_upgrade() {
   log_info "最新版本: ${latest}"
 
   install_binary "$latest"
+  apply_binary_capabilities
 
   if [[ "$IS_OPENWRT" == "1" ]]; then
     if [[ -x "$INIT_SCRIPT" ]]; then
@@ -607,6 +666,7 @@ do_uninstall() {
       systemctl stop hysteria-server.service
     fi
     systemctl disable hysteria-server.service 2>/dev/null || true
+    remove_binary_capabilities
     rm -f "$SYSTEMD_SERVICE" "$SYSTEMD_TEMPLATE" "$EXECUTABLE_PATH"
     systemctl daemon-reload
   fi
@@ -695,7 +755,7 @@ ${BOLD}Hysteria 2 一鍵安裝腳本${NC}
   - 需要 root 權限
   - 一般 Linux 發行版需要 systemd；OpenWrt 使用 procd
   - 需要已解析至伺服器的網域名稱（ACME 自動申請憑證）
-  - 建議使用 Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、OpenWrt 21.02+
+  - 建議使用 Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、CentOS 7+、OpenWrt 21.02+
 
 EOF
 }

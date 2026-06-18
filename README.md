@@ -18,9 +18,9 @@
 | 作業系統 | Linux（一般發行版需 systemd；OpenWrt 使用 procd） |
 | 權限 | root（`sudo`） |
 | 網域 | 已解析至伺服器公網 IP 的網域名稱 |
-| 建議發行版 | Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、CentOS Stream 8+、OpenWrt 21.02+ |
+| 建議發行版 | Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、CentOS 7+、CentOS Stream 8+、OpenWrt 21.02+ |
 
-不支援：Alpine Linux、NixOS、CentOS 7。
+不支援：Alpine Linux、NixOS。
 
 ## 快速開始
 
@@ -103,6 +103,18 @@ logread -e hysteria                   # 查看日誌
 ```
 
 > 注意：OpenWrt 上服務以 root 執行（路由器環境慣例）。MIPS 裝置會自動選用 `mipsle-sf`（軟浮點）二進位檔。
+
+## CentOS 7
+
+CentOS 7 已納入支援。Hysteria 2 官方二進位檔為靜態連結，無需升級 glibc。
+
+腳本會自動偵測舊版 systemd（< 229），並：
+
+- 略過 `AmbientCapabilities` 等新版 systemd 指令
+- 透過 `setcap` 授予執行檔網路權限（需 `libcap` 套件）
+- 若預設核心不支援 BBR 則跳過（可透過 [elrepo](https://elrepo.org/) 核心啟用）
+
+> 注意：CentOS 7 已於 2024 年 6 月 EOL，建議長期使用請升級至 Rocky Linux 8+ 或 AlmaLinux 8+。
 
 ## 服務管理
 
