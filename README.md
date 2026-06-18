@@ -6,8 +6,8 @@
 
 - 自動下載並安裝最新版 Hysteria 2 二進位檔
 - 互動式產生伺服器設定（ACME 自動申請 TLS 憑證）
-- 建立 systemd 服務並開機自啟
-- 自動開放防火牆 UDP 埠（UFW / firewalld）
+- 建立 systemd 或 procd 服務並開機自啟
+- 自動開放防火牆 UDP 埠（UFW / firewalld / OpenWrt UCI）
 - 啟用 BBR 拥塞控制
 - 安裝完成後顯示客戶端連線 URI
 
@@ -15,12 +15,12 @@
 
 | 項目 | 說明 |
 |------|------|
-| 作業系統 | Linux（需支援 systemd） |
+| 作業系統 | Linux（一般發行版需 systemd；OpenWrt 使用 procd） |
 | 權限 | root（`sudo`） |
 | 網域 | 已解析至伺服器公網 IP 的網域名稱 |
-| 建議發行版 | Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、CentOS Stream 8+ |
+| 建議發行版 | Debian 11+、Ubuntu 22.04+、Rocky Linux 8+、CentOS Stream 8+、OpenWrt 21.02+ |
 
-不支援：OpenWrt、Alpine Linux、NixOS、CentOS 7。
+不支援：Alpine Linux、NixOS、CentOS 7。
 
 ## 快速開始
 
@@ -71,7 +71,38 @@ sudo LISTEN_PORT=8443 bash install.sh
 |------|------|
 | `/usr/local/bin/hysteria` | 執行檔 |
 | `/etc/hysteria/config.yaml` | 伺服器設定檔 |
-| `/etc/systemd/system/hysteria-server.service` | systemd 服務單元 |
+| `/etc/systemd/system/hysteria-server.service` | systemd 服務單元（一般 Linux） |
+| `/etc/init.d/hysteria-server` | procd 服務腳本（OpenWrt） |
+
+## OpenWrt
+
+OpenWrt 路由器可透過 SSH 以 root 執行本腳本。腳本會自動偵測 OpenWrt，並使用 procd 管理服務、UCI 設定防火牆規則。
+
+**前置需求：**
+
+```bash
+opkg update
+opkg install bash curl ca-bundle openssl-util
+```
+
+**安裝：**
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/kachen/Hysteria/main/install.sh
+bash install.sh
+```
+
+**服務管理：**
+
+```bash
+/etc/init.d/hysteria-server enable    # 開機自啟
+/etc/init.d/hysteria-server start     # 啟動
+/etc/init.d/hysteria-server restart   # 重啟
+/etc/init.d/hysteria-server status    # 狀態
+logread -e hysteria                   # 查看日誌
+```
+
+> 注意：OpenWrt 上服務以 root 執行（路由器環境慣例）。MIPS 裝置會自動選用 `mipsle-sf`（軟浮點）二進位檔。
 
 ## 服務管理
 
